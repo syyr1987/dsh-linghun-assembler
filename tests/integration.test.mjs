@@ -103,7 +103,7 @@ test("联动: turn/start → 组装素材包 → linghun 注入（替代 warm �
   try {
     const { sections, listeners, ctx } = makeHarness(streamImpl);
     // 挂载顺序：assembler 先（触发写文件），linghun 后（渲染读文件）
-    applyAssembler(ctx, AssemblerConfig({ output: { injectPath: asmFile } }));
+    applyAssembler(ctx, AssemblerConfig({ retrieval: { mode: "always" }, output: { injectPath: asmFile } }));
     applyLinghun(ctx, LinghunConfig({ memory: { assembler: { injectPath: asmFile } } }));
 
     // 1) request/header：记录 provider/model
@@ -165,6 +165,49 @@ test("联动: LLM 失败时保留上次素材包（降级不阻断）", async ()
 
     const payload = readFileSync(asmFile, "utf8");
     assert.ok(payload.includes("上次成功素材"), "LLM 失败应保留上次素材包（不覆盖）");
+  } finally {
+    restore();
+  }
+});
+
+test("联动: auto 模式小体量直通（免检索层，全量交 LLM）", async () => {
+  const restore = setupHome();
+  const asmFile = join(tmpdir(), `linghun-link-auto-${Date.now()}.md`);
+  // stream 收到什么就原样带出——用来断言直通路径把全量条目送给了 LLM
+  let receivedHitText = "";
+  const streamImpl = async function* () {
+    // 从 messages[0].content 拿用户消息（含候选条目）
+    receivedHitText = lastUserContent ?? "";
+    yield { type: "text-delta", text: "素材：直通产物" };
+  };
+  let lastUserContent = "";
+  const captureStream = async function* (opts) {
+    const msg = opts.messages?.[0]?.content ?? [];
+    lastUserContent = msg.map((b) => b.text ?? "").join("\n");
+    yield { type: "text-delta", text: "素材：直通产物" };
+  };
+
+  try {
+    const { sections, listeners, ctx } = makeHarness(captureStream);
+    // 默认 mode=auto，warm 只有 4 条（<= 24）→ 走直通
+    applyAssembler(ctx, AssemblerConfig({ output: { injectPath: asmFile } }));
+    applyLinghun(ctx, LinghunConfig({ memory: { assembler: { injectPath: asmFile } } }));
+
+    const session = {
+      log: [{ type: "user/message", data: { content: [{ type: "text", text: "项目现在的状态怎么样？" }] } }],
+    };
+    fire(listeners, "session/event", session, {
+      type: "request/header",
+      data: { header: { config: { provider: "deepseek", model: "deepseek-chat" } } },
+    });
+    fire(listeners, "session/event", session, { type: "turn/start", seq: 1 });
+    await sleep(100);
+
+    const payload = readFileSync(asmFile, "utf8");
+    assert.ok(payload.includes("直通产物"), "素材包应已写入");
+    // 直通路径：LLM 收到的是全量条目（含与 query 无关的 OpenWeather 条目），而非 BM25 过滤结果
+    assert.ok(lastUserContent.includes("OpenWeather"), "直通应把全部 warm 条目交给 LLM（不检索过滤）");
+    assert.ok(lastUserContent.includes("sprint 1"), "直通应含全部条目");
   } finally {
     restore();
   }

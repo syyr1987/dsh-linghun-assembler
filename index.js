@@ -37,6 +37,12 @@ const Config = z.object({
     topK: z.number().default(12),
     /** 题型分流开关：knowledge_update 时间保底 / summarization 广覆盖。 */
     strategy: z.boolean().default(true),
+    /** 检索模式：auto=按 warm 体量自适应（小体量直通，大体量 BM25）；always=强制检索；never=强制直通。 */
+    mode: z.union(["auto", "always", "never"]).default("auto"),
+    /** auto 模式的体量阈值：warm 条目数 <= 此值走直通（免检索层）。 */
+    autoThreshold: z.number().default(24),
+    /** 直通时素材文本上限（字符），超出截断防 LLM 输入爆炸。 */
+    maxDirectChars: z.number().default(8000),
   }).default({}),
   assemble: z.object({
     temperature: z.number().default(0.2),
@@ -52,6 +58,13 @@ const Config = z.object({
   /** LLM/检索失败时保留上次素材包（不覆盖、不阻断对话）。 */
   fallbackKeepLast: z.boolean().default(true),
 }).default({});
+
+/** 检索模式决策：auto=体量自适应（<=autoThreshold 直通，否则 BM25）；always/never 强制。 */
+function decideRetrieval(mode, entryCount, autoThreshold = 24) {
+  if (mode === "always") return true;
+  if (mode === "never") return false;
+  return entryCount > autoThreshold;
+}
 
 /** 从事件流收集最近一条真实用户消息（跳过运行时上下文注入）。 */
 function collectLastUserQuery(session) {
@@ -123,13 +136,25 @@ function apply(ctx, config) {
 
     try {
       const entries = parseWarm(warmText);
-      const docs = entries.map((e) => e.block);
-      const bm25 = new BM25(docs);
+      const mode = c.retrieval?.mode ?? "auto";
+      const autoThreshold = c.retrieval?.autoThreshold ?? 24;
+      const useRetrieval = decideRetrieval(mode, entries.length, autoThreshold);
       const cat = guessCategory(query);
-      const strat = c.retrieval?.strategy === false ? { k: c.retrieval?.topK ?? 12, recentSafe: 0 } : retrievalParams(cat, { k: c.retrieval?.topK ?? 12 });
-      const idxs = bm25.top(query, strat.k, strat.recentSafe);
-      const hits = idxs.map((i) => entries[i]);
-      const hitText = renderWarmEntries(hits);
+
+      let hits;
+      if (useRetrieval) {
+        const docs = entries.map((e) => e.block);
+        const bm25 = new BM25(docs);
+        const strat = c.retrieval?.strategy === false ? { k: c.retrieval?.topK ?? 12, recentSafe: 0 } : retrievalParams(cat, { k: c.retrieval?.topK ?? 12 });
+        const idxs = bm25.top(query, strat.k, strat.recentSafe);
+        hits = idxs.map((i) => entries[i]);
+      } else {
+        // 直通：体量小（<= autoThreshold）免检索层，全量交 LLM——信息更全，且躲开 BM25 长文档惩罚
+        hits = entries;
+      }
+      let hitText = renderWarmEntries(hits);
+      const cap = c.retrieval?.maxDirectChars ?? 8000;
+      if (hitText.length > cap) hitText = hitText.slice(0, cap) + "\n…(直通截断)…";
 
       const outText = await assembleWithLlm(llmClient, lastModel, cat, query, hitText, {
         temperature: c.assemble?.temperature ?? 0.2,
@@ -181,4 +206,4 @@ function writeFileSafe(path, text) {
   writeFileSync(path, text, "utf8");
 }
 
-export { Config, NS, apply, inject, name, guessCategory, collectLastUserQuery };
+export { Config, NS, apply, inject, name, guessCategory, collectLastUserQuery, decideRetrieval };

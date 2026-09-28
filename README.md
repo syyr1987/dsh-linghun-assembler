@@ -18,7 +18,7 @@ warm 记忆原文注入有两个已知缺陷（BEAM/100K 交叉验证实证）�
 ```
 用户消息 → turn/start
   → collectLastUserQuery（跳过运行时上下文注入）
-  → BM25 检索 warm（题型分流策略）
+  → 检索 warm（默认 auto 自适应：条目 ≤24 直通全量免 BM25；大体量才走 BM25 + 题型分流）
   → 会话 LLM 组装（复用 DSH llm 通道，无自配 key）
   → 写素材包 → linghun memory.assembler.injectPath 注入
 ```
@@ -55,6 +55,9 @@ output:
   injectPath: /path/to/assembled.md    # 与 linghun memory.assembler.injectPath 同值
   label: 以下记忆素材由提取子智能体按当前问题从记忆库组装（仅保留相关条目，细节原样）
 retrieval:
+  mode: auto          # auto=按体量自适应；always=强制 BM25；never=强制直通
+  autoThreshold: 24   # auto 模式下 warm 条目数 ≤ 此值走直通（全量交 LLM，免检索层）
+  maxDirectChars: 8000  # 直通时素材文本上限，超出截断并标注
   topK: 12
   strategy: true
 assemble:
@@ -80,7 +83,7 @@ BEAM/100K 交叉验证（100K_1 + 100K_2 两集，各 20 题）：
 ## 开发
 
 ```bash
-npm test          # 11 项：warm 解析 / BM25 / 题型分流 / 双轨 prompt / 插件入口
+npm test          # 16 项：warm 解析 / BM25 / 题型分流 / 双轨 prompt / 插件入口 / 自适应直通 / 联动实测
 ```
 
 ## 路线

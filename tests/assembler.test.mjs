@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { parseWarm, renderWarmEntries } from "../warm.js";
 import { BM25, STRATEGY, retrievalParams, tokenize } from "../bm25.js";
 import { buildSystemPrompt } from "../assemble.js";
-import { Config, collectLastUserQuery, guessCategory } from "../index.js";
+import { Config, collectLastUserQuery, decideRetrieval, guessCategory } from "../index.js";
 
 // ── warm 解析 ─────────────────────────────────────────────────────────
 const WARM = [
@@ -94,6 +94,17 @@ test("index: guessCategory 启发式分流", () => {
   assert.equal(guessCategory("请总结一下我学到了什么"), "summarization");
   assert.equal(guessCategory("现在最新状态是什么"), "knowledge_update");
   assert.equal(guessCategory("帮我看看这个功能怎么设计"), "general");
+});
+
+test("index: decideRetrieval 体量自适应（auto）", () => {
+  assert.equal(decideRetrieval("auto", 4, 24), false, "小体量直通（免检索层）");
+  assert.equal(decideRetrieval("auto", 30, 24), true, "大体量走 BM25");
+  assert.equal(decideRetrieval("auto", 24, 24), false, "等于阈值也直通");
+});
+
+test("index: decideRetrieval 强制模式", () => {
+  assert.equal(decideRetrieval("always", 1, 24), true, "always 强制检索");
+  assert.equal(decideRetrieval("never", 999, 24), false, "never 强制直通");
 });
 
 test("index: collectLastUserQuery 跳过运行时上下文注入", () => {
