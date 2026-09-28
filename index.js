@@ -143,6 +143,7 @@ function apply(ctx, config) {
       lastError = "";
     } catch (err) {
       lastError = String(err?.message ?? err);
+      console.warn(`[linghun-assembler] 组装失败（保留上次素材包）: ${lastError}`);
       // fallbackKeepLast：不覆盖上次成功素材包（保持 linghun 侧可用）
     }
   };
