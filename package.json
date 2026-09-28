@@ -1,0 +1,53 @@
+{
+  "name": "dsh-linghun-assembler",
+  "version": "0.1.0",
+  "description": "灵魂插件「提取侧子智能体」组装层：按当前问题从记忆库 BM25 检索命中条目，调 LLM 组装「有用素材包」，经 linghun 注入通道（memory.assembler.injectPath）替代 warm 原文注入。与 dsh-linghun 以插件组合形式使用。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "compatibility": {
+      "dsh": ">=0.1.0-rc.7 <0.2.0",
+      "node": ">=20.18",
+      "profiles": [
+        "web"
+      ]
+    }
+  },
+  "files": [
+    "index.js",
+    "bm25.js",
+    "warm.js",
+    "assemble.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "bm25",
+    "retrieval",
+    "assembler",
+    "cognitive-agent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.18"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "author": "syyr1987"
+}
