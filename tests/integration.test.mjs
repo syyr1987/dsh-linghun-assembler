@@ -127,7 +127,7 @@ test("联动: turn/start → 组装素材包 → linghun 注入（替代 warm �
     assert.ok(existsSync(asmFile), "素材包文件应已写入");
     const payload = readFileSync(asmFile, "utf8");
     assert.ok(payload.includes("165 个 commit"), "素材包应含检索命中的最新事实");
-    assert.ok(payload.includes("提取子智能体"), "素材包应带组装 label");
+    assert.ok(payload.includes("认知循环团队"), "素材包应带组装 label");
 
     // 4) linghun soul:memory 渲染应注入素材包
     const mem = sections.find((s) => s.name === "soul:memory");
@@ -165,6 +165,50 @@ test("联动: LLM 失败时保留上次素材包（降级不阻断）", async ()
 
     const payload = readFileSync(asmFile, "utf8");
     assert.ok(payload.includes("上次成功素材"), "LLM 失败应保留上次素材包（不覆盖）");
+  } finally {
+    restore();
+  }
+});
+
+test("联动: deep 查询触发史官时序素材 + 循环状态落盘", async () => {
+  const restore = setupHome();
+  const asmFile = join(tmpdir(), `linghun-link-deep-${Date.now()}.md`);
+  const calls = [];
+  const streamImpl = async function* (opts) {
+    calls.push(opts.system ?? "");
+    const sys = opts.system ?? "";
+    if (sys.includes("史官")) {
+      yield { type: "text-delta", text: JSON.stringify({ finding: "来龙去脉：项目从 2026-03 启动，先建 warm 记忆，后拆 assembler。" }) };
+    } else {
+      yield { type: "text-delta", text: "素材：项目来龙去脉已梳理，含时序脉络。" };
+    }
+  };
+
+  try {
+    const { sections, listeners, ctx } = makeHarness(streamImpl);
+    applyAssembler(ctx, AssemblerConfig({ output: { injectPath: asmFile } }));
+    applyLinghun(ctx, LinghunConfig({ memory: { assembler: { injectPath: asmFile } } }));
+
+    const session = {
+      log: [{ type: "user/message", data: { content: [{ type: "text", text: "这个项目的来龙去脉是什么？" }] } }],
+    };
+    fire(listeners, "session/event", session, {
+      type: "request/header",
+      data: { header: { config: { provider: "deepseek", model: "deepseek-chat" } } },
+    });
+    fire(listeners, "session/event", session, { type: "turn/start", seq: 1 });
+    await sleep(100);
+
+    const payload = readFileSync(asmFile, "utf8");
+    assert.ok(payload.includes("来龙去脉"), "素材包应含史官梳理结果");
+
+    // 循环状态落盘：$HOME/.dsh/linghun/team/cycle.json
+    const cycleFile = join(process.env.HOME, ".dsh", "linghun", "team", "cycle.json");
+    assert.ok(existsSync(cycleFile), "cycle.json 应已写入");
+    const cycle = JSON.parse(readFileSync(cycleFile, "utf8"));
+    assert.equal(cycle.turnCount, 1);
+    assert.equal(cycle.judgeStats.deep, 1, "deep 判官统计应落盘");
+    assert.equal(cycle.judgeStats.strategy.timeline, 1);
   } finally {
     restore();
   }

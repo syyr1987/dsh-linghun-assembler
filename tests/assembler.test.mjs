@@ -86,7 +86,7 @@ test("index: 默认配置可解析", () => {
   assert.equal(parsed.enabled, true);
   assert.equal(parsed.warm.path, "");
   assert.equal(parsed.output.injectPath, "");
-  assert.ok(parsed.output.label.includes("提取子智能体"));
+  assert.ok(parsed.output.label.includes("认知循环团队"));
   assert.equal(parsed.debounceMs, 5000);
 });
 

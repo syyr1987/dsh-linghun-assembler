@@ -1,7 +1,7 @@
 {
   "name": "dsh-linghun-assembler",
-  "version": "0.1.1",
-  "description": "灵魂的记忆提取侧：按当前问题 BM25 检索记忆库，LLM 组装「有用素材包」注入 linghun——记忆按需供给，不再全文倾倒。与 dsh-linghun 组合使用。",
+  "version": "0.2.0",
+  "description": "灵魂的记忆提取侧·认知循环团队版：判断→捞取→组装→被判定→校准五步闭环，判官/史官/辩手/编辑/书记角色化子智能体承载，BM25 检索 + 时序素材 + LLM 组装「有用素材包」注入 linghun。与 dsh-linghun 组合使用。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -25,6 +25,7 @@
     "bm25.js",
     "warm.js",
     "assemble.js",
+    "team/",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -38,7 +39,9 @@
     "bm25",
     "retrieval",
     "assembler",
-    "cognitive-agent"
+    "cognitive-agent",
+    "cognitive-loop",
+    "agent-team"
   ],
   "license": "MIT",
   "engines": {

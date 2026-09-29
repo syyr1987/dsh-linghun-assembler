@@ -17,8 +17,25 @@ import { dirname, join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { parseWarm, renderWarmEntries } from "./warm.js";
-import { BM25, retrievalParams } from "./bm25.js";
-import { assembleWithLlm } from "./assemble.js";
+import { BM25 } from "./bm25.js";
+import {
+  judgeByHeuristics,
+  judgeWithLlm,
+  archivistWithLlm,
+  advocateWithLlm,
+  editorWithLlm,
+} from "./team/roles.js";
+import {
+  teamDir,
+  readCycle,
+  writeCycle,
+  recordTurn,
+  recordFeedback,
+  recordGap,
+  appendGapFile,
+  loadTimelineMaterial,
+  matchFeedback,
+} from "./team/cycle.js";
 
 const name = "linghun-assembler";
 const inject = ["llm"];
@@ -53,12 +70,41 @@ const Config = z.object({
   /** 素材包输出：写入 linghun 的注入通道路径（配 linghun memory.assembler.injectPath 同值）。 */
   output: z.object({
     injectPath: z.string().default(""),
-    label: z.string().default("以下记忆素材由提取子智能体按当前问题从记忆库组装（仅保留相关条目，细节原样）"),
+    label: z.string().default("以下记忆素材由认知循环团队按当前问题从记忆库组装（仅保留相关条目，细节原样）"),
   }).default({}),
   /** 同会话防抖：距上次组装不足该毫秒数则跳过（避免连续追问高频触发）。 */
   debounceMs: z.number().default(5000),
   /** LLM/检索失败时保留上次素材包（不覆盖、不阻断对话）。 */
   fallbackKeepLast: z.boolean().default(true),
+  /** 认知循环团队（v0.2）：判断→捞取→组装→被判定→校准。 */
+  team: z.object({
+    /** 团队工作区目录（循环状态 + 缺口）；留空 $DSH_HOME/linghun/team。 */
+    cycleDir: z.string().default(""),
+    judge: z.object({
+      /** 用 LLM 判官（默认 false = 代码启发式，零额外 LLM 成本）。 */
+      llm: z.boolean().default(false),
+    }).default({}),
+    archivist: z.object({
+      /** deep 模式启用史官时序组织（LLM，把 warm/episodic/journal 组织成来龙去脉）。 */
+      enabled: z.boolean().default(true),
+      /** 时序素材：warm 按最近访问取 topN。 */
+      topRecent: z.number().default(8),
+      /** 时序素材：episodic 最近文件尾部字节上限。 */
+      episodicTail: z.number().default(6000),
+      /** 时序素材：journal 读取最近天数。 */
+      journalDays: z.number().default(3),
+      /** 时序素材：每个 journal 文件尾部字节上限。 */
+      journalTail: z.number().default(4000),
+    }).default({}),
+    advocate: z.object({
+      /** deep 模式启用辩手矛盾扫描（LLM，默认关——编辑 prompt 已含冲突标注要求）。 */
+      enabled: z.boolean().default(false),
+    }).default({}),
+    feedback: z.object({
+      /** 启发式反馈采集：下一轮消息与素材包关键词重叠度 → 命中/未命中（被判定→校准）。 */
+      enabled: z.boolean().default(true),
+    }).default({}),
+  }).default({}),
 }).default({});
 
 /** 检索模式决策：auto=体量自适应（<=autoThreshold 直通，否则 BM25）；always/never 强制。 */
@@ -115,6 +161,8 @@ function apply(ctx, config) {
   let lastModel = { provider: "", model: "" };
   let lastAssembleAt = 0;
   let lastError = "";
+  /** 上一轮素材包交付（供下轮「被判定」反馈采集）。 */
+  let lastDelivery = null;
 
   const warmPath = () => {
     const p = (cfg().warm?.path ?? "").trim();
@@ -123,7 +171,13 @@ function apply(ctx, config) {
   const outPath = () =>
     (cfg().output?.injectPath ?? "").trim() || join(resolveDshHome(), DEFAULT_ASM);
 
-  const runAssemble = async (session) => {
+  /**
+   * 认知循环主流程（v0.2）：
+   *   判断(Judge) → 捞取(Act) → 组装(Compose) → 被判定(Feedback) → 校准(Calibrate)
+   * 角色：判官（启发式默认 / LLM 可选）、捞手（BM25 代码）、史官（deep 时序组织）、
+   *       辩手（deep 可选矛盾扫描）、编辑（素材包收口）、书记（循环状态+缺口回写）。
+   */
+  const runCognitiveCycle = async (session) => {
     const c = cfg();
     if (c.enabled === false) return;
     if (!llmClient) return;
@@ -131,13 +185,28 @@ function apply(ctx, config) {
     const out = outPath();
     if (!out) return;
 
+    const query = collectLastUserQuery(session);
+    if (!query) return;
+
+    const tDir = teamDir(c.team?.cycleDir);
+
+    // 被判定(Feedback)：上一轮素材包 vs 本轮用户消息 → 命中/未命中（启发式）
+    if (c.team?.feedback?.enabled !== false && lastDelivery) {
+      const fb = matchFeedback(query, lastDelivery.text);
+      if (fb.overlap > 0) {
+        try {
+          const cyc = readCycle(tDir);
+          writeCycle(tDir, recordFeedback(cyc, { hit: fb.hit, query }));
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+
     // 防抖：同一会话短时间内不重复组装
     const now = Date.now();
     if (now - lastAssembleAt < (c.debounceMs ?? 5000)) return;
     lastAssembleAt = now;
-
-    const query = collectLastUserQuery(session);
-    if (!query) return;
 
     const warmText = readWarmSafe(warmPath());
     if (!warmText) return;
@@ -146,37 +215,119 @@ function apply(ctx, config) {
       const entries = parseWarm(warmText);
       const mode = c.retrieval?.mode ?? "auto";
       const autoThreshold = c.retrieval?.autoThreshold ?? 24;
-      const useRetrieval = decideRetrieval(mode, entries.length, autoThreshold);
-      const cat = guessCategory(query);
 
+      // 判断(Judge)：判官（默认代码启发式；LLM 判官失败自动降级回启发式）
+      const baseCycle = readCycle(tDir);
+      let judge;
+      if (c.team?.judge?.llm === true) {
+        try {
+          judge = await judgeWithLlm(llmClient, lastModel, query, baseCycle, c.assemble);
+          judge.by = "llm";
+        } catch (err) {
+          judge = judgeByHeuristics(query);
+          judge.by = "fallback";
+          console.warn(`[linghun-assembler] LLM 判官失败，降级启发式: ${err?.message ?? err}`);
+        }
+      } else {
+        judge = judgeByHeuristics(query);
+        judge.by = "code";
+      }
+      const cat = guessCategory(query);
+      const level = judge.level ?? "medium";
+      const strategy = judge.strategy ?? "general";
+      const searchQuery = judge.query || query;
+
+      // 捞取(Act)：light 直通 / medium BM25 / deep BM25(+时序+矛盾)
+      const forceRetrieval = level === "deep" && entries.length > 0;
+      const useRetrieval = decideRetrieval(mode, entries.length, autoThreshold) || forceRetrieval;
+      const k =
+        strategy === "summarization"
+          ? 24
+          : strategy === "knowledge_update"
+            ? 12
+            : level === "deep"
+              ? Math.max(18, c.retrieval?.topK ?? 12)
+              : (c.retrieval?.topK ?? 12);
+      const recentSafe = strategy === "knowledge_update" ? 6 : 0;
       let hits;
-      if (useRetrieval) {
+      if (useRetrieval && entries.length) {
         const docs = entries.map((e) => e.block);
         const bm25 = new BM25(docs);
-        const strat = c.retrieval?.strategy === false ? { k: c.retrieval?.topK ?? 12, recentSafe: 0 } : retrievalParams(cat, { k: c.retrieval?.topK ?? 12 });
-        const idxs = bm25.top(query, strat.k, strat.recentSafe);
+        const idxs = bm25.top(searchQuery, k, recentSafe);
         hits = idxs.map((i) => entries[i]);
       } else {
-        // 直通：体量小（<= autoThreshold）免检索层，全量交 LLM——信息更全，且躲开 BM25 长文档惩罚
+        // 直通：体量小或 light——全量交编辑，躲开 BM25 长文档惩罚
         hits = entries;
       }
       let hitText = renderWarmEntries(hits);
       const cap = c.retrieval?.maxDirectChars ?? 8000;
-      if (hitText.length > cap) hitText = hitText.slice(0, cap) + "\n…(直通截断)…";
+      if (hitText.length > cap) hitText = hitText.slice(0, cap) + "\n…(截断)…";
 
-      const outText = await assembleWithLlm(llmClient, lastModel, cat, query, hitText, {
-        temperature: c.assemble?.temperature ?? 0.2,
-        maxTokens: c.assemble?.maxTokens ?? 1200,
-      });
+      // 史官（deep 时序组织）：warm 遗忘梯度 + episodic 归档 + journal 流水
+      let timelinePart = "";
+      if (level === "deep" && c.team?.archivist?.enabled !== false && entries.length) {
+        const tl = loadTimelineMaterial(resolveDshHome(), c.team?.archivist ?? {});
+        if (tl.trim()) {
+          try {
+            timelinePart = await archivistWithLlm(llmClient, lastModel, query, tl, c.assemble);
+          } catch (err) {
+            console.warn(`[linghun-assembler] 史官组织失败（跳过时序素材）: ${err?.message ?? err}`);
+          }
+        }
+      }
+
+      // 辩手（deep 可选矛盾扫描）
+      let advocatePart = "";
+      if (level === "deep" && c.team?.advocate?.enabled === true && hitText.trim()) {
+        try {
+          const adv = await advocateWithLlm(llmClient, lastModel, query, hitText, c.assemble);
+          if (!/^无冲突$/.test(adv.trim())) advocatePart = adv;
+        } catch (err) {
+          console.warn(`[linghun-assembler] 辩手扫描失败（跳过）: ${err?.message ?? err}`);
+        }
+      }
+
+      // 组装(Compose)：编辑角色收口（携带循环上下文）
+      const composed = [hitText, timelinePart, advocatePart].filter(Boolean).join("\n\n---\n\n");
+      const outText = await editorWithLlm(
+        llmClient,
+        lastModel,
+        cat,
+        query,
+        composed || hitText,
+        {
+          lastJudge: baseCycle.lastJudge,
+          feedback: baseCycle.feedback,
+        },
+        {
+          temperature: c.assemble?.temperature ?? 0.2,
+          maxTokens: c.assemble?.maxTokens ?? 1200,
+        },
+      );
 
       // 写素材包：带 label 头部（与 linghun renderMemory 的注入格式一致）
       const label = (c.output?.label ?? "").trim();
       const payload = label ? `> ${label}\n\n${outText}\n` : `${outText}\n`;
       writeFileSafe(out, payload);
       lastError = "";
+
+      // 校准(Calibrate)：书记回写循环状态 + 缺口
+      try {
+        let cyc = recordTurn(readCycle(tDir), judge);
+        if (!hits.length && entries.length > 0) {
+          cyc = recordGap(cyc, { query, hitText });
+          appendGapFile(tDir, { query, at: new Date().toISOString() });
+        }
+        writeCycle(tDir, cyc);
+      } catch (err) {
+        console.warn(`[linghun-assembler] 书记回写失败（不影响注入）: ${err?.message ?? err}`);
+      }
+
+      // 记录本次交付，供下一轮「被判定」反馈采集
+      lastDelivery = { text: payload, at: Date.now() };
     } catch (err) {
       lastError = String(err?.message ?? err);
-      console.warn(`[linghun-assembler] 组装失败（保留上次素材包）: ${lastError}`);
+      console.warn(`[linghun-assembler] 认知循环失败（保留上次素材包）: ${lastError}`);
       // fallbackKeepLast：不覆盖上次成功素材包（保持 linghun 侧可用）
     }
   };
@@ -189,12 +340,13 @@ function apply(ctx, config) {
       };
     }
     if (event?.type !== "turn/start") return;
-    void runAssemble(session);
+    void runCognitiveCycle(session);
   });
 
   // 只读辅助不导出（对外最小面）；错误信息经 console 输出（DSH 侧日志可见）
   ctx.on("ready", () => {
-    console.info(`[linghun-assembler] 素材包输出路径：${outPath()}（留空默认约定路径，与 linghun memory.assembler.injectPath 同值联动）`);
+    console.info(`[linghun-assembler] 素材包输出路径：${outPath()}（与 linghun memory.assembler.injectPath 同值联动）`);
+    console.info(`[linghun-assembler] 认知循环团队工作区：${teamDir(cfg().team?.cycleDir)}（cycle.json + gaps.md）`);
   });
 }
 
