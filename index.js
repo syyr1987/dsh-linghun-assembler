@@ -12,7 +12,7 @@
  * 赶不上，下一轮必然用上（linghun 侧渲染按 mtime 缓存重新读取）。
  * LLM 失败时默认保留上次素材包（fallbackKeepLast），不阻断对话。
  */
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
@@ -46,6 +46,17 @@ const name = "linghun-assembler";
 const inject = ["llm"];
 const NS = "linghun-assembler";
 
+/** 运行时探针（排障用）：追加 JSONL 到 /tmp，不影响任何业务路径。 */
+const PROBE_FILE = "/tmp/asm-probe.jsonl";
+function probe(tag, extra) {
+  try {
+    appendFileSync(PROBE_FILE, JSON.stringify({ at: new Date().toISOString(), tag, ...extra }) + "\n", "utf8");
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** 运行时探针（排障用）：追加 JSONL 到 /tmp，不影响任何业务路径。 */
 const DEFAULT_WARM = join("linghun", "memory", "warm.md");
 /** 素材包默认输出路径：与 linghun 侧 memory.assembler.injectPath 的默认约定同值（零配置联动）。 */
 const DEFAULT_ASM = join("linghun", "memory", "assembled.md");
@@ -154,10 +165,21 @@ function guessCategory(question) {
 
 function apply(ctx, config) {
   const cfg = () => config;
+  probe("apply-enter");
+  const appCtx = ctx;
 
   let llmClient = null;
+  let pendingSession = null;
   ctx.inject(["llm"], (sctx) => {
     llmClient = sctx.llm;
+    probe("inject-llm", { has: !!sctx.llm });
+    // llm 服务落定后，补跑因「注入未就绪」错过的会话认知循环
+    if (pendingSession) {
+      const s = pendingSession;
+      pendingSession = null;
+      probe("llm-deferred-run");
+      void runCognitiveCycle(s);
+    }
     return () => {
       llmClient = null;
     };
@@ -184,17 +206,21 @@ function apply(ctx, config) {
    */
   const runCognitiveCycle = async (session) => {
     const c = cfg();
-    if (c.enabled === false) return;
-    if (!llmClient) return;
-    if (!lastModel.provider || !lastModel.model) return;
+    // llm 双源兜底：inject 回调可能晚于首个 turn/start 落定，现场从 ctx 直接读服务
+    const llm = llmClient ?? appCtx.llm ?? null;
+    probe("cycle-enter", { enabled: c.enabled, hasLlm: !!llm, viaInject: !!llmClient, provider: lastModel.provider, model: lastModel.model, hasOut: !!outPath() });
+    if (c.enabled === false) return probe("early-return", { reason: "enabled-false" });
+    if (!llm) return probe("early-return", { reason: "no-llm" });
+    if (!lastModel.provider || !lastModel.model) return probe("early-return", { reason: "no-model", provider: lastModel.provider, model: lastModel.model });
     const out = outPath();
-    if (!out) return;
+    if (!out) return probe("early-return", { reason: "no-out" });
 
     const query = collectLastUserQuery(session);
-    if (!query) return;
+    if (!query) return probe("early-return", { reason: "no-query" });
 
     const tDir = teamDir(c.team?.cycleDir);
     ensureDomainDirs(tDir);
+    probe("team-dirs-created", { tDir });
 
     // 被判定(Feedback)：上一轮素材包 vs 本轮用户消息 → 命中/未命中（启发式）
     if (c.team?.feedback?.enabled !== false && lastDelivery) {
@@ -227,7 +253,7 @@ function apply(ctx, config) {
       let judge;
       if (c.team?.judge?.llm === true) {
         try {
-          judge = await judgeWithLlm(llmClient, lastModel, query, baseCycle, c.assemble);
+          judge = await judgeWithLlm(llm, lastModel, query, baseCycle, c.assemble);
           judge.by = "llm";
         } catch (err) {
           judge = judgeByHeuristics(query);
@@ -293,7 +319,7 @@ function apply(ctx, config) {
           } else {
             const tl = loadTimelineMaterial(resolveDshHome(), c.team?.archivist ?? {});
             if (tl.trim()) {
-              timelinePart = await archivistWithLlm(llmClient, lastModel, query, tl, c.assemble);
+              timelinePart = await archivistWithLlm(llm, lastModel, query, tl, c.assemble);
               if (timelinePart.trim()) {
                 writeTimelineCache(tDir, { topic: query, query, stamp: new Date().toISOString().slice(0, 10), finding: timelinePart.trim() });
               }
@@ -308,7 +334,7 @@ function apply(ctx, config) {
       let advocatePart = "";
       if (level === "deep" && c.team?.advocate?.enabled === true && hitText.trim()) {
         try {
-          const adv = await advocateWithLlm(llmClient, lastModel, query, hitText, c.assemble);
+          const adv = await advocateWithLlm(llm, lastModel, query, hitText, c.assemble);
           if (!/^无冲突$/.test(adv.trim())) advocatePart = adv;
         } catch (err) {
           console.warn(`[linghun-assembler] 辩手扫描失败（跳过）: ${err?.message ?? err}`);
@@ -318,7 +344,7 @@ function apply(ctx, config) {
       // 组装(Compose)：编辑角色收口（携带循环上下文）
       const composed = [hitText, timelinePart, advocatePart].filter(Boolean).join("\n\n---\n\n");
       const outText = await editorWithLlm(
-        llmClient,
+        llm,
         lastModel,
         cat,
         query,
@@ -377,18 +403,28 @@ function apply(ctx, config) {
   };
 
   ctx.on("session/event", (session, event) => {
+    probe("session-event", { type: event?.type });
     if (event?.type === "request/header" && event.data?.header?.config) {
       lastModel = {
         provider: event.data.header.config.provider ?? "",
         model: event.data.header.config.model ?? "",
       };
+      probe("request-header", { provider: lastModel.provider, model: lastModel.model });
     }
     if (event?.type !== "turn/start") return;
+    probe("turn-start");
+    if (!llmClient && !appCtx.llm) {
+      pendingSession = session;
+      probe("llm-deferred", {});
+      return;
+    }
+    pendingSession = null;
     void runCognitiveCycle(session);
   });
 
   // 只读辅助不导出（对外最小面）；错误信息经 console 输出（DSH 侧日志可见）
   ctx.on("ready", () => {
+    probe("ready");
     console.info(`[linghun-assembler] 素材包输出路径：${outPath()}（与 linghun memory.assembler.injectPath 同值联动）`);
     console.info(`[linghun-assembler] 认知循环团队工作区：${teamDir(cfg().team?.cycleDir)}（cycle.json + gaps.md + 各角色领域）`);
   });
