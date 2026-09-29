@@ -174,4 +174,4 @@ npm test          # 16 项：warm 解析 / BM25 / 题型分流 / 双轨 prompt /
 
 ## License
 
-MIT
+GPL-3.0
