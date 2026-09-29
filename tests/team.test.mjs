@@ -7,7 +7,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { judgeByHeuristics, extractJson, editorSystemPrompt } from "../team/roles.js";
-import { emptyCycle, teamDir, ensureDomainDirs, domainDir, findTimelineCache, writeTimelineCache, timelineTopics, readCycle, writeCycle, recordTurn, recordFeedback, recordGap, loadTimelineMaterial, matchFeedback } from "../team/cycle.js";
+import { emptyCycle, teamDir, ensureDomainDirs, domainDir, findTimelineCache, writeTimelineCache, timelineTopics, readCycle, writeCycle, recordTurn, recordFeedback, recordGap, loadTimelineMaterial, matchFeedback, appendJudgeRecord, readJudgeHistory, appendEditorBundle, readEditorBundles } from "../team/cycle.js";
 
 // ---- 判官启发式 ----
 
@@ -225,4 +225,49 @@ test("史官缓存：无关主题不命中 + 停用词不误命中", () => {
   writeTimelineCache(dir, { topic: "项目来龙去脉", query: "项目来龙去脉", stamp: new Date().toISOString().slice(0, 10), finding: "脉络。" });
   assert.equal(findTimelineCache(dir, "帮我写一首诗"), null, "无关主题不命中");
   assert.equal(findTimelineCache(dir, "这个什么"), null, "纯停用词不命中");
+});
+
+test("判官履历：追加→读取，字段完整且顺序保持", () => {
+  const dir = makeCycleDir();
+  appendJudgeRecord(dir, { turn: 1, query: "这个项目的来龙去脉", level: "deep", strategy: "timeline", by: "code", model: "m1" });
+  appendJudgeRecord(dir, { turn: 2, query: "最近进展", level: "medium", strategy: "knowledge_update", by: "code", model: "m1" });
+  const recs = readJudgeHistory(dir);
+  assert.equal(recs.length, 2);
+  assert.equal(recs[0].level, "deep");
+  assert.equal(recs[0].strategy, "timeline");
+  assert.equal(recs[0].by, "code");
+  assert.ok(recs[0].at, "应带时间戳");
+  assert.equal(recs[1].turn, 2);
+});
+
+test("判官履历：超量截断只留最近 200 条", () => {
+  const dir = makeCycleDir();
+  for (let i = 1; i <= 205; i++) {
+    appendJudgeRecord(dir, { turn: i, query: `q${i}`, level: "light", strategy: "general", by: "code" });
+  }
+  const recs = readJudgeHistory(dir, 300);
+  assert.equal(recs.length, 200, "只留最近 200 条");
+  assert.equal(recs[0].turn, 6, "最早保留的应是第 6 条（205-200+1）");
+  assert.equal(recs[199].turn, 205);
+});
+
+test("判官履历：损坏行跳过 / 缺失文件返回空", () => {
+  const dir = makeCycleDir();
+  appendJudgeRecord(dir, { turn: 1, query: "a", level: "light", strategy: "general", by: "code" });
+  writeFileSync(join(dir, "judge", "history.jsonl"), "{bad json\n" + readJudgeHistory(dir, 10).map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+  const recs = readJudgeHistory(dir);
+  assert.equal(recs.length, 1, "坏行跳过，好行保留");
+  const empty = readJudgeHistory(join(dir, "nope"));
+  assert.deepEqual(empty, []);
+});
+
+test("编辑发布：素材包交付留档（条目数/来源标记）", () => {
+  const dir = makeCycleDir();
+  appendEditorBundle(dir, { turn: 1, query: "来龙去脉", level: "deep", strategy: "timeline", entryCount: 8, chars: 1200, timeline: true, advocate: false });
+  appendEditorBundle(dir, { turn: 2, query: "进展", level: "medium", strategy: "knowledge_update", entryCount: 5, chars: 800, timeline: false, advocate: false });
+  const recs = readEditorBundles(dir);
+  assert.equal(recs.length, 2);
+  assert.equal(recs[0].entryCount, 8);
+  assert.equal(recs[0].timeline, true, "deep 组装应带时序标记");
+  assert.equal(recs[1].chars, 800);
 });

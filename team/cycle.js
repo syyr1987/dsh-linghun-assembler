@@ -8,12 +8,14 @@
  * - 循环状态持久化（$DSH_HOME/linghun/memory/team/cycle.json）——回合号、上次判定、策略权重、反馈计数、缺口；
  * - 领域目录管理——每个子智能体一块领域（judge/archivist/advocate/editor），全部在海马体 memory/team/ 内，主智能体可共享；
  * - 史官时序缓存——deep 梳理过的 topic 落 archivist/timelines/index.json，同 topic 复用免重复烧 LLM；
+ * - 判官履历——每次判定决策落 judge/history.jsonl（分级/策略/依据），供主智能体复盘分级-反馈对应；
+ * - 编辑发布记录——每次素材包交付落 editor/bundles.jsonl（条目数/来源），可追溯每轮注入了什么；
  * - 时序素材读取（warm 遗忘梯度 + episodic 最近归档 + journal 最近流水）——给「史官」角色；
  * - 启发式反馈采集（下一轮用户消息与素材包的关键词重叠度 → 命中/未命中）；
  * - 书记回写（缺口：用户提到但记忆无命中的内容，记入 gaps.md，供沉淀侧补记）。
  */
 import { mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 
 const NS = "linghun-team-cycle";
@@ -24,6 +26,12 @@ const DEFAULT_TEAM_DIR = join("linghun", "memory", "team");
 const CYCLE_FILE = "cycle.json";
 const GAPS_FILE = "gaps.md";
 const TIMELINES_FILE = join("archivist", "timelines", "index.json");
+/** 判官履历（JSONL）：每次判定决策一行。 */
+const JUDGE_FILE = join("judge", "history.jsonl");
+/** 编辑发布记录（JSONL）：每次素材包交付一行。 */
+const BUNDLES_FILE = join("editor", "bundles.jsonl");
+/** 领域 JSONL 日志保留行数（防无限膨胀）。 */
+const MAX_LOG_LINES = 200;
 /** 领域子目录（每个子智能体一块领域）。 */
 const DOMAIN_DIRS = ["judge", "archivist", "advocate", "editor", join("archivist", "timelines")];
 /** 史官缓存新鲜度（天）：超过视为过期，需重新梳理。 */
@@ -229,6 +237,59 @@ export function writeTimelineCache(dir, entry) {
 /** 史官领域摘要（供 linghun memory_read 共享）：已梳理的 topic 列表。 */
 export function timelineTopics(dir) {
   return readTimelineCache(dir).map((e) => ({ topic: e.topic, stamp: e.stamp ?? "" })).slice(-20);
+}
+
+/* ── 领域 JSONL 日志（判官履历 / 编辑发布记录）────────────────────────────── */
+
+function appendJsonl(dir, file, record, maxLines = MAX_LOG_LINES) {
+  try {
+    mkdirSync(join(dir, dirname(file)), { recursive: true });
+    const p = join(dir, file);
+    const lines = readSafe(p).split("\n").filter((l) => l.trim());
+    lines.push(JSON.stringify({ at: new Date().toISOString(), ...record }));
+    const kept = lines.slice(-maxLines);
+    writeFileSync(p, `${kept.join("\n")}\n`, "utf8");
+    return kept.length;
+  } catch {
+    return 0;
+  }
+}
+
+function readJsonlTail(dir, file, limit) {
+  try {
+    const lines = readSafe(join(dir, file)).split("\n").filter((l) => l.trim()).slice(-limit);
+    const out = [];
+    for (const l of lines) {
+      try {
+        out.push(JSON.parse(l));
+      } catch {
+        /* 跳过坏行 */
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 判官领域：追加一条判定履历（judge/history.jsonl）。返回保留行数（0=失败）。 */
+export function appendJudgeRecord(dir, record) {
+  return appendJsonl(dir, JUDGE_FILE, record);
+}
+
+/** 判官领域：读最近 limit 条判定履历（缺失/损坏 → []）。 */
+export function readJudgeHistory(dir, limit = 20) {
+  return readJsonlTail(dir, JUDGE_FILE, limit);
+}
+
+/** 编辑领域：追加一条素材包发布记录（editor/bundles.jsonl）。返回保留行数（0=失败）。 */
+export function appendEditorBundle(dir, record) {
+  return appendJsonl(dir, BUNDLES_FILE, record);
+}
+
+/** 编辑领域：读最近 limit 条发布记录（缺失/损坏 → []）。 */
+export function readEditorBundles(dir, limit = 20) {
+  return readJsonlTail(dir, BUNDLES_FILE, limit);
 }
 
 /**

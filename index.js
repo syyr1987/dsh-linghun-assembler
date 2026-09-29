@@ -36,6 +36,8 @@ import {
   recordFeedback,
   recordGap,
   appendGapFile,
+  appendJudgeRecord,
+  appendEditorBundle,
   loadTimelineMaterial,
   matchFeedback,
 } from "./team/cycle.js";
@@ -241,6 +243,20 @@ function apply(ctx, config) {
       const strategy = judge.strategy ?? "general";
       const searchQuery = judge.query || query;
 
+      // 判官履历（judge/history.jsonl）：每次判定决策留痕（分级/策略/依据），供主智能体复盘
+      try {
+        appendJudgeRecord(tDir, {
+          turn: (baseCycle.turnCount ?? 0) + 1,
+          query,
+          level,
+          strategy,
+          by: judge.by,
+          model: lastModel.model,
+        });
+      } catch {
+        /* best-effort */
+      }
+
       // 捞取(Act)：light 直通 / medium BM25 / deep BM25(+时序+矛盾)
       const forceRetrieval = level === "deep" && entries.length > 0;
       const useRetrieval = decideRetrieval(mode, entries.length, autoThreshold) || forceRetrieval;
@@ -322,6 +338,22 @@ function apply(ctx, config) {
       const payload = label ? `> ${label}\n\n${outText}\n` : `${outText}\n`;
       writeFileSafe(out, payload);
       lastError = "";
+
+      // 编辑发布记录（editor/bundles.jsonl）：每次素材包交付留档（条目数/来源可追溯）
+      try {
+        appendEditorBundle(tDir, {
+          turn: (baseCycle.turnCount ?? 0) + 1,
+          query,
+          level,
+          strategy,
+          entryCount: hits.length,
+          chars: payload.length,
+          timeline: !!timelinePart,
+          advocate: !!advocatePart,
+        });
+      } catch {
+        /* best-effort */
+      }
 
       // 校准(Calibrate)：书记回写循环状态 + 缺口
       try {
