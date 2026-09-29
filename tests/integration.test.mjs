@@ -247,8 +247,8 @@ test("联动: deep 相同主题二次触发命中史官缓存（免重复梳理�
     const archivistAfterFirst = calls.filter((x) => x === "archivist").length;
     assert.equal(archivistAfterFirst, 1, "首次应调史官 LLM 梳理");
 
-    // 第二次相同主题（debounceMs=0 不禁防抖）
-    fire(listeners, "session/event", session, { type: "turn/start", seq: 2 });
+    // 第二次相同主题（debounceMs=0 不禁防抖）；触发语义：request/header（turn/start 不触发组装）
+    fire(listeners, "session/event", session, header);
     await sleep(100);
     assert.equal(calls.filter((x) => x === "archivist").length, archivistAfterFirst, "二次应命中史官缓存，免重复 LLM");
     assert.equal(editorInputs.length, 2, "编辑应跑两轮");

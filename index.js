@@ -48,7 +48,9 @@ const NS = "linghun-assembler";
 
 /** 运行时探针（排障用）：追加 JSONL 到 /tmp，不影响任何业务路径。 */
 const PROBE_FILE = "/tmp/asm-probe.jsonl";
+let PROBE_ENABLED = true;
 function probe(tag, extra) {
+  if (!PROBE_ENABLED) return;
   try {
     appendFileSync(PROBE_FILE, JSON.stringify({ at: new Date().toISOString(), tag, ...extra }) + "\n", "utf8");
   } catch {
@@ -63,6 +65,8 @@ const DEFAULT_ASM = join("linghun", "memory", "assembled.md");
 
 const Config = z.object({
   enabled: z.boolean().default(true),
+  /** 运行时探针开关（写 /tmp/asm-probe.jsonl）；调试期默认开，稳定后改 false。 */
+  debug: z.boolean().default(true),
   /** warm 记忆库路径；留空用 $DSH_HOME/linghun/memory/warm.md。 */
   warm: z.object({
     path: z.string().default(""),
@@ -149,7 +153,10 @@ function collectLastUserQuery(session) {
       .map((b) => b.text)
       .join("\n")
       .trim();
-    if (text) return text;
+    if (!text) continue;
+    // 系统注入块（技能目录/上下文）走普通 user/message 通道，非真实用户问题——跳过
+    if (text.includes("<system-reminder>") || text.includes("<user_query_context>")) continue;
+    return text;
   }
   return "";
 }
@@ -165,6 +172,7 @@ function guessCategory(question) {
 
 function apply(ctx, config) {
   const cfg = () => config;
+  PROBE_ENABLED = config.debug !== false;
   probe("apply-enter");
   const appCtx = ctx;
 
@@ -404,15 +412,16 @@ function apply(ctx, config) {
 
   ctx.on("session/event", (session, event) => {
     probe("session-event", { type: event?.type });
-    if (event?.type === "request/header" && event.data?.header?.config) {
+    if (event?.type !== "request/header") return;
+    if (event.data?.header?.config) {
       lastModel = {
         provider: event.data.header.config.provider ?? "",
         model: event.data.header.config.model ?? "",
       };
       probe("request-header", { provider: lastModel.provider, model: lastModel.model });
     }
-    if (event?.type !== "turn/start") return;
-    probe("turn-start");
+    // 触发时机：request/header 晚于 turn/start、user/message 到达，此刻
+    // 本轮用户消息已写入日志、模型信息已就位——避免首轮空转与素材滞后一轮。
     if (!llmClient && !appCtx.llm) {
       pendingSession = session;
       probe("llm-deferred", {});

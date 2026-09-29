@@ -128,6 +128,17 @@ test("index: collectLastUserQuery snapshotEvents 契约（F1：新版 DSH Sessio
   assert.equal(collectLastUserQuery(session), "快照契约下的真实问题");
 });
 
+test("index: collectLastUserQuery 跳过系统注入块（<system-reminder>/<user_query_context>）", () => {
+  const session = {
+    log: [
+      { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "<system-reminder>\nA skill is a reusable set of task-specific instructions..." }] } },
+      { type: "user/message", data: { source: { kind: "user" }, content: [{ type: "text", text: "<user_query_context>\n以下信息只适用于紧随其后的这条用户消息" }] } },
+      { type: "user/message", data: { content: [{ type: "text", text: "真实用户问题：这个项目进展如何？" }] } },
+    ],
+  };
+  assert.equal(collectLastUserQuery(session), "真实用户问题：这个项目进展如何？");
+});
+
 test("index: collectLastUserQuery 旧契约 log 兼容（F1 防御性）", () => {
   const session = {
     log: [{ type: "user/message", data: { content: [{ type: "text", text: "旧契约问题" }] } }],
