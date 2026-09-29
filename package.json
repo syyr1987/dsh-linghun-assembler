@@ -1,7 +1,7 @@
 {
   "name": "dsh-linghun-assembler",
   "version": "0.1.1",
-  "description": "灵魂插件「提取侧子智能体」组装层：按当前问题从记忆库 BM25 检索命中条目，调 LLM 组装「有用素材包」，经 linghun 注入通道（memory.assembler.injectPath）替代 warm 原文注入。与 dsh-linghun 以插件组合形式使用。",
+  "description": "灵魂的记忆提取侧：按当前问题 BM25 检索记忆库，LLM 组装「有用素材包」注入 linghun——记忆按需供给，不再全文倾倒。与 dsh-linghun 组合使用。",
   "type": "module",
   "main": "index.js",
   "exports": {

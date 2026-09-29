@@ -1,6 +1,6 @@
 # dsh-linghun-assembler
 
-灵魂插件（`dsh-linghun`）的**提取侧子智能体**组装层。按当前用户问题从暖态记忆库（warm.md）做 BM25 检索，调会话 LLM 组装「有用素材包」，经 linghun 注入通道替代 warm 原文注入。
+灵魂的记忆提取侧：按当前问题从记忆库（warm.md）做 BM25 检索，调会话 LLM 组装「有用素材包」，经 linghun 注入通道注入——**记忆按需供给，不再全文倾倒**。
 
 > 组合形态：`dsh-linghun`（注入通道 + 记忆布局） + `dsh-linghun-assembler`（提取 + 组装）。linghun 保持零 LLM 调用、零改动面；本插件独立版本迭代、独立启停。
 
