@@ -86,7 +86,7 @@ test("index: 默认配置可解析", () => {
   assert.equal(parsed.enabled, true);
   assert.equal(parsed.warm.path, "");
   assert.equal(parsed.output.injectPath, "");
-  assert.ok(parsed.output.label.includes("认知循环团队"));
+  assert.equal(parsed.output.label, undefined, "label 由 linghun 注入时统一添加，assembler 不再配置");
   assert.equal(parsed.debounceMs, 5000);
 });
 

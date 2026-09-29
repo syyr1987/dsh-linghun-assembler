@@ -65,8 +65,8 @@ const DEFAULT_ASM = join("linghun", "memory", "assembled.md");
 
 const Config = z.object({
   enabled: z.boolean().default(true),
-  /** 运行时探针开关（写 /tmp/asm-probe.jsonl）；调试期默认开，稳定后改 false。 */
-  debug: z.boolean().default(true),
+  /** 运行时探针开关（写 /tmp/asm-probe.jsonl）；稳定期默认关，排障时开 true。 */
+  debug: z.boolean().default(false),
   /** warm 记忆库路径；留空用 $DSH_HOME/linghun/memory/warm.md。 */
   warm: z.object({
     path: z.string().default(""),
@@ -89,8 +89,8 @@ const Config = z.object({
   }).default({}),
   /** 素材包输出：写入 linghun 的注入通道路径（配 linghun memory.assembler.injectPath 同值）。 */
   output: z.object({
+    // label 由 linghun 注入时统一添加（memory.assembler.label），assembler 只写纯素材。
     injectPath: z.string().default(""),
-    label: z.string().default("以下记忆素材由认知循环团队按当前问题从记忆库组装（仅保留相关条目，细节原样）"),
   }).default({}),
   /** 同会话防抖：距上次组装不足该毫秒数则跳过（避免连续追问高频触发）。 */
   debounceMs: z.number().default(5000),
@@ -367,9 +367,8 @@ function apply(ctx, config) {
         },
       );
 
-      // 写素材包：带 label 头部（与 linghun renderMemory 的注入格式一致）
-      const label = (c.output?.label ?? "").trim();
-      const payload = label ? `> ${label}\n\n${outText}\n` : `${outText}\n`;
+      // 写素材包：纯素材内容（label 由 linghun 注入时统一添加，避免消费侧双层 label）
+      const payload = `${outText}\n`;
       writeFileSafe(out, payload);
       lastError = "";
 

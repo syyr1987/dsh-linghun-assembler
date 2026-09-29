@@ -127,7 +127,7 @@ test("联动: turn/start → 组装素材包 → linghun 注入（替代 warm �
     assert.ok(existsSync(asmFile), "素材包文件应已写入");
     const payload = readFileSync(asmFile, "utf8");
     assert.ok(payload.includes("165 个 commit"), "素材包应含检索命中的最新事实");
-    assert.ok(payload.includes("认知循环团队"), "素材包应带组装 label");
+    assert.ok(!payload.includes("认知循环团队"), "assembler 不再写 label（由 linghun 注入时统一加）");
 
     // 4) linghun soul:memory 渲染应注入素材包
     const mem = sections.find((s) => s.name === "soul:memory");
