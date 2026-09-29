@@ -3,21 +3,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { judgeByHeuristics, extractJson, editorSystemPrompt } from "../team/roles.js";
-import {
-  emptyCycle,
-  teamDir,
-  readCycle,
-  writeCycle,
-  recordTurn,
-  recordFeedback,
-  recordGap,
-  loadTimelineMaterial,
-  matchFeedback,
-} from "../team/cycle.js";
+import { emptyCycle, teamDir, ensureDomainDirs, domainDir, findTimelineCache, writeTimelineCache, timelineTopics, readCycle, writeCycle, recordTurn, recordFeedback, recordGap, loadTimelineMaterial, matchFeedback } from "../team/cycle.js";
 
 // ---- 判官启发式 ----
 
@@ -185,8 +175,54 @@ test("matchFeedback：空输入安全", () => {
 
 // ---- 团队工作区路径 ----
 
-test("teamDir：默认 $DSH_HOME/linghun/team，显式配置优先", () => {
-  // 默认路径依赖 DSH_HOME 环境，只验证显式配置分支与相对结构
+test("teamDir：默认 $DSH_HOME/linghun/memory/team（海马体内），显式配置优先", () => {
   const explicit = teamDir("/tmp/custom-team");
   assert.equal(explicit, "/tmp/custom-team");
+  const def = teamDir("");
+  assert.ok(def.endsWith(join("linghun", "memory", "team")), `默认应落到海马体 memory/team，实际: ${def}`);
+});
+
+// ---- 领域目录 ----
+
+test("domain：ensureDomainDirs 建全角色领域子目录", () => {
+  const dir = makeCycleDir();
+  ensureDomainDirs(dir);
+  assert.ok(existsSync(join(dir, "judge")));
+  assert.ok(existsSync(join(dir, "archivist", "timelines")));
+  assert.ok(existsSync(join(dir, "advocate")));
+  assert.ok(existsSync(join(dir, "editor")));
+});
+
+// ---- 史官时序缓存 ----
+
+test("史官缓存：写入→读取→topic 列表", () => {
+  const dir = makeCycleDir();
+  const today = new Date().toISOString().slice(0, 10);
+  writeTimelineCache(dir, { topic: "这个项目的来龙去脉是什么？", query: "这个项目的来龙去脉是什么？", stamp: today, finding: "从 2026-03 启动。" });
+  const topics = timelineTopics(dir);
+  assert.equal(topics.length, 1);
+  assert.equal(topics[0].stamp, today);
+});
+
+test("史官缓存：相同主题命中（显著词重叠 + 新鲜）", () => {
+  const dir = makeCycleDir();
+  const today = new Date().toISOString().slice(0, 10);
+  writeTimelineCache(dir, { topic: "这个项目的来龙去脉是什么？", query: "这个项目的来龙去脉是什么？", stamp: today, finding: "从 2026-03 启动。" });
+  const hit = findTimelineCache(dir, "项目来龙去脉再说一遍");
+  assert.ok(hit, "相似主题应命中缓存");
+  assert.ok(hit.finding.includes("2026-03"));
+});
+
+test("史官缓存：过期条目不命中", () => {
+  const dir = makeCycleDir();
+  const old = new Date(Date.now() - 10 * 86400_000).toISOString().slice(0, 10);
+  writeTimelineCache(dir, { topic: "项目的来龙去脉", query: "项目的来龙去脉", stamp: old, finding: "旧梳理。" });
+  assert.equal(findTimelineCache(dir, "项目来龙去脉"), null, "10 天前梳理应过期");
+});
+
+test("史官缓存：无关主题不命中 + 停用词不误命中", () => {
+  const dir = makeCycleDir();
+  writeTimelineCache(dir, { topic: "项目来龙去脉", query: "项目来龙去脉", stamp: new Date().toISOString().slice(0, 10), finding: "脉络。" });
+  assert.equal(findTimelineCache(dir, "帮我写一首诗"), null, "无关主题不命中");
+  assert.equal(findTimelineCache(dir, "这个什么"), null, "纯停用词不命中");
 });

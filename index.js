@@ -27,6 +27,9 @@ import {
 } from "./team/roles.js";
 import {
   teamDir,
+  ensureDomainDirs,
+  findTimelineCache,
+  writeTimelineCache,
   readCycle,
   writeCycle,
   recordTurn,
@@ -189,6 +192,7 @@ function apply(ctx, config) {
     if (!query) return;
 
     const tDir = teamDir(c.team?.cycleDir);
+    ensureDomainDirs(tDir);
 
     // 被判定(Feedback)：上一轮素材包 vs 本轮用户消息 → 命中/未命中（启发式）
     if (c.team?.feedback?.enabled !== false && lastDelivery) {
@@ -263,16 +267,24 @@ function apply(ctx, config) {
       const cap = c.retrieval?.maxDirectChars ?? 8000;
       if (hitText.length > cap) hitText = hitText.slice(0, cap) + "\n…(截断)…";
 
-      // 史官（deep 时序组织）：warm 遗忘梯度 + episodic 归档 + journal 流水
+      // 史官（deep 时序组织）：先查领域缓存（同 topic 且新鲜 → 复用免重梳），未命中才读时序素材 + LLM 梳理，成功写入缓存
       let timelinePart = "";
       if (level === "deep" && c.team?.archivist?.enabled !== false && entries.length) {
-        const tl = loadTimelineMaterial(resolveDshHome(), c.team?.archivist ?? {});
-        if (tl.trim()) {
-          try {
-            timelinePart = await archivistWithLlm(llmClient, lastModel, query, tl, c.assemble);
-          } catch (err) {
-            console.warn(`[linghun-assembler] 史官组织失败（跳过时序素材）: ${err?.message ?? err}`);
+        try {
+          const cached = findTimelineCache(tDir, query);
+          if (cached?.finding) {
+            timelinePart = `【史官·缓存复用 ${cached.stamp}】\n${cached.finding}`;
+          } else {
+            const tl = loadTimelineMaterial(resolveDshHome(), c.team?.archivist ?? {});
+            if (tl.trim()) {
+              timelinePart = await archivistWithLlm(llmClient, lastModel, query, tl, c.assemble);
+              if (timelinePart.trim()) {
+                writeTimelineCache(tDir, { topic: query, query, stamp: new Date().toISOString().slice(0, 10), finding: timelinePart.trim() });
+              }
+            }
           }
+        } catch (err) {
+          console.warn(`[linghun-assembler] 史官组织失败（跳过时序素材）: ${err?.message ?? err}`);
         }
       }
 
@@ -346,7 +358,7 @@ function apply(ctx, config) {
   // 只读辅助不导出（对外最小面）；错误信息经 console 输出（DSH 侧日志可见）
   ctx.on("ready", () => {
     console.info(`[linghun-assembler] 素材包输出路径：${outPath()}（与 linghun memory.assembler.injectPath 同值联动）`);
-    console.info(`[linghun-assembler] 认知循环团队工作区：${teamDir(cfg().team?.cycleDir)}（cycle.json + gaps.md）`);
+    console.info(`[linghun-assembler] 认知循环团队工作区：${teamDir(cfg().team?.cycleDir)}（cycle.json + gaps.md + 各角色领域）`);
   });
 }
 

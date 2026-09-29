@@ -202,13 +202,57 @@ test("联动: deep 查询触发史官时序素材 + 循环状态落盘", async (
     const payload = readFileSync(asmFile, "utf8");
     assert.ok(payload.includes("来龙去脉"), "素材包应含史官梳理结果");
 
-    // 循环状态落盘：$HOME/.dsh/linghun/team/cycle.json
-    const cycleFile = join(process.env.HOME, ".dsh", "linghun", "team", "cycle.json");
+    // 循环状态落盘：$HOME/.dsh/linghun/memory/team/cycle.json（海马体 memory 区内）
+    const cycleFile = join(process.env.HOME, ".dsh", "linghun", "memory", "team", "cycle.json");
     assert.ok(existsSync(cycleFile), "cycle.json 应已写入");
     const cycle = JSON.parse(readFileSync(cycleFile, "utf8"));
     assert.equal(cycle.turnCount, 1);
     assert.equal(cycle.judgeStats.deep, 1, "deep 判官统计应落盘");
     assert.equal(cycle.judgeStats.strategy.timeline, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("联动: deep 相同主题二次触发命中史官缓存（免重复梳理）", async () => {
+  const restore = setupHome();
+  const asmFile = join(tmpdir(), `linghun-link-cache-${Date.now()}.md`);
+  const calls = [];
+  const editorInputs = [];
+  const streamImpl = async function* (opts) {
+    const sys = opts.system ?? "";
+    const userText = opts.messages?.[0]?.content?.map((b) => b.text ?? "").join("\n") ?? "";
+    if (sys.includes("史官")) {
+      calls.push("archivist");
+      yield { type: "text-delta", text: JSON.stringify({ finding: "来龙去脉：项目从 2026-03 启动。" }) };
+    } else {
+      calls.push("editor");
+      editorInputs.push(userText);
+      yield { type: "text-delta", text: "素材：梳理结果。" };
+    }
+  };
+
+  try {
+    const { listeners, ctx } = makeHarness(streamImpl);
+    applyAssembler(ctx, AssemblerConfig({ debounceMs: 0, output: { injectPath: asmFile } }));
+    applyLinghun(ctx, LinghunConfig({ memory: { assembler: { injectPath: asmFile } } }));
+
+    const session = {
+      log: [{ type: "user/message", data: { content: [{ type: "text", text: "这个项目的来龙去脉是什么？" }] } }],
+    };
+    const header = { type: "request/header", data: { header: { config: { provider: "deepseek", model: "deepseek-chat" } } } };
+    fire(listeners, "session/event", session, header);
+    fire(listeners, "session/event", session, { type: "turn/start", seq: 1 });
+    await sleep(100);
+    const archivistAfterFirst = calls.filter((x) => x === "archivist").length;
+    assert.equal(archivistAfterFirst, 1, "首次应调史官 LLM 梳理");
+
+    // 第二次相同主题（debounceMs=0 不禁防抖）
+    fire(listeners, "session/event", session, { type: "turn/start", seq: 2 });
+    await sleep(100);
+    assert.equal(calls.filter((x) => x === "archivist").length, archivistAfterFirst, "二次应命中史官缓存，免重复 LLM");
+    assert.equal(editorInputs.length, 2, "编辑应跑两轮");
+    assert.ok(editorInputs[1].includes("缓存复用"), "第二次编辑输入应含缓存复用标注（免重梳）");
   } finally {
     restore();
   }

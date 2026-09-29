@@ -29,9 +29,27 @@
 | **编辑 Editor** | 压缩成有用素材包（带循环上下文） | 每轮必调（复用 assemble.js 双轨 prompt） |
 | **书记 Scribe** | 循环状态落盘 + 缺口回写 | 纯代码零 LLM |
 
+### 领域模型（子智能体有领域，主智能体共享）
+
+每个子智能体管理一块领域，全部长在海马体 memory/ 内——领域有主权，但不搞信息孤岛：
+
+```
+$DSH_HOME/linghun/memory/team/     # 团队工作区（与 warm/cold/episodic/journal/assembled 并列）
+├── cycle.json                     # 共享认知台账（书记）：回合/判定统计/反馈
+├── gaps.md                        # 共享缺口登记（书记）：检索未命中
+├── judge/                         # 判官领域
+├── archivist/timelines/           # 史官领域：时序梳理缓存（同 topic 复用免重梳）
+├── advocate/                      # 辩手领域
+└── editor/                        # 编辑领域
+```
+
+- **史官缓存复用**：deep 梳理过的 topic 落 `archivist/timelines/index.json`（带日期）；同主题且 7 天内新鲜直接复用，标注「史官·缓存复用」，不重复烧 LLM。
+- **主智能体共享**：linghun 的 memory_read 输出「团队认知台账」段——回合数、判官分级、反馈命中/未命中、缺口清单、史官已梳理 topic。主智能体看海马体时能看到自己的认知循环状态，据此补记忆（缺口 → memory_append → 下轮命中）。
+- **缺口闭环**：gaps.md 暴露给主智能体后，检索未命中的 query 可被人工/主智能体补进 warm，形成「缺口驱动补记忆」闭环。
+
 ### 循环状态（团队工作区）
 
-`$DSH_HOME/linghun/team/` 下由书记维护：
+`$DSH_HOME/linghun/memory/team/` 下由书记维护：
 
 - **cycle.json**：回合数、判官分级统计、反馈命中/未命中、缺口列表（原子写，损坏自动回落空状态）
 - **gaps.md**：检索未命中的用户 query 回写，供下次/人工补记忆
@@ -107,7 +125,7 @@ assemble:
 debounceMs: 5000
 fallbackKeepLast: true
 team:
-  cycleDir: ""        # 默认 $DSH_HOME/linghun/team（cycle.json + gaps.md）
+  cycleDir: ""        # 默认 $DSH_HOME/linghun/memory/team（cycle.json + gaps.md）
   judge:
     llm: false        # 判官默认代码启发式，零 LLM；true 才走 LLM 分级
   archivist:
