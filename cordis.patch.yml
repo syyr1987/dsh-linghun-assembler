@@ -1,0 +1,9 @@
+# dsh-linghun-assembler — 提取侧子智能体组装层 Cordis 挂载声明
+#
+# 标准 profile bundle：`dsh plugin --profile <p> add dsh-linghun-assembler` 即可安装挂载。
+# 素材包输出走默认约定路径（$DSH_HOME/linghun/memory/assembled.md），与 linghun
+# memory.assembler.injectPath 默认值同值联动；如需自定义路径，在 profile 配置里给
+# linghun-assembler.output.injectPath 与 linghun.memory.assembler.injectPath 填同一路径。
+- insert:
+    - id: linghun-assembler
+      name: 'dsh-linghun-assembler'

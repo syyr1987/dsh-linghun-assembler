@@ -25,6 +25,8 @@ const inject = ["llm"];
 const NS = "linghun-assembler";
 
 const DEFAULT_WARM = join("linghun", "memory", "warm.md");
+/** 素材包默认输出路径：与 linghun 侧 memory.assembler.injectPath 的默认约定同值（零配置联动）。 */
+const DEFAULT_ASM = join("linghun", "memory", "assembled.md");
 
 const Config = z.object({
   enabled: z.boolean().default(true),
@@ -68,12 +70,17 @@ function decideRetrieval(mode, entryCount, autoThreshold = 24) {
 
 /** 从事件流收集最近一条真实用户消息（跳过运行时上下文注入）。 */
 function collectLastUserQuery(session) {
-  const events = session.log ?? session.events ?? [];
+  // 防御性获取：新版 DSH Session 契约用 snapshotEvents()（Inspect 形态），无 log/events 字段。
+  const events =
+    typeof session?.snapshotEvents === "function"
+      ? session.snapshotEvents()
+      : (session.log ?? session.events ?? []);
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     if (ev?.type !== "user/message") continue;
     const src = ev.data?.source;
-    if (src?.kind === "runtime-context" || src?.kind === "model") continue;
+    // MessageSource.kind 合法枚举：user / plugin / model / tool；runtime-context 不存在。
+    if (src?.kind === "plugin" || src?.kind === "model") continue;
     const blocks = ev.data?.content ?? [];
     const text = blocks
       .filter((b) => b.type === "text" && typeof b.text === "string")
@@ -113,7 +120,8 @@ function apply(ctx, config) {
     const p = (cfg().warm?.path ?? "").trim();
     return p ? p : join(resolveDshHome(), DEFAULT_WARM);
   };
-  const outPath = () => (cfg().output?.injectPath ?? "").trim();
+  const outPath = () =>
+    (cfg().output?.injectPath ?? "").trim() || join(resolveDshHome(), DEFAULT_ASM);
 
   const runAssemble = async (session) => {
     const c = cfg();
@@ -186,10 +194,7 @@ function apply(ctx, config) {
 
   // 只读辅助不导出（对外最小面）；错误信息经 console 输出（DSH 侧日志可见）
   ctx.on("ready", () => {
-    const out = outPath();
-    if (!out) {
-      console.warn("[linghun-assembler] output.injectPath 未配置：素材包不会写入，请在 linghun 的 memory.assembler.injectPath 填同值。");
-    }
+    console.info(`[linghun-assembler] 素材包输出路径：${outPath()}（留空默认约定路径，与 linghun memory.assembler.injectPath 同值联动）`);
   });
 }
 

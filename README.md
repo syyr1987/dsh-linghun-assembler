@@ -31,11 +31,16 @@ warm 记忆原文注入有两个已知缺陷（BEAM/100K 交叉验证实证）�
 
 ## 安装与配置
 
+**必须用 DSH 插件方式安装**（声明了 `dsh.bundle`，`dsh plugin add` 才会挂载为 profile layer；裸 `npm i` 只装依赖不挂载）：
+
 ```bash
-npm i dsh-linghun-assembler
+# 以 web profile 为例（其他 profile 同理）
+dsh plugin --profile web add dsh-linghun-assembler
 ```
 
-在 `dsh-linghun` 侧配置注入通道：
+**零配置联动**：默认素材包路径为 `$DSH_HOME/linghun/memory/assembled.md`，与 `dsh-linghun` 的 `memory.assembler.injectPath` 默认约定值同值——装完即可工作，无需配置。
+
+需要自定义路径时（两侧必须填**同一个**路径）：
 
 ```yaml
 # linghun 配置
@@ -43,8 +48,6 @@ memory:
   assembler:
     injectPath: /path/to/assembled.md   # 素材包写入/读取路径
 ```
-
-本插件侧：
 
 ```yaml
 # linghun-assembler 配置
@@ -66,6 +69,9 @@ assemble:
 debounceMs: 5000
 fallbackKeepLast: true
 ```
+
+> **双重挂载提醒**：若此前用 `cordis.patch.yml` 手工 `insert` 过本插件（旧方式），升级到声明 `dsh.bundle` 的版本后请**删除手工 insert 条目**，否则会挂载两次（每轮组装跑两遍）。
+
 
 ## 评测依据
 

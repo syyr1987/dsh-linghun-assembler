@@ -107,13 +107,30 @@ test("index: decideRetrieval 强制模式", () => {
   assert.equal(decideRetrieval("never", 999, 24), false, "never 强制直通");
 });
 
-test("index: collectLastUserQuery 跳过运行时上下文注入", () => {
+test("index: collectLastUserQuery 跳过插件注入（F2：runtime-context 非合法枚举，过滤 plugin/model）", () => {
   const session = {
     log: [
-      { type: "user/message", data: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "系统注入" }] } },
+      { type: "user/message", data: { source: { kind: "plugin", plugin: "other" }, content: [{ type: "text", text: "插件注入上下文" }] } },
       { type: "user/message", data: { content: [{ type: "text", text: "真实用户问题：怎么修？" }] } },
       { type: "assistant/message", data: { message: { content: [{ type: "text", text: "助手回答" }] } } },
     ],
   };
   assert.equal(collectLastUserQuery(session), "真实用户问题：怎么修？");
+});
+
+test("index: collectLastUserQuery snapshotEvents 契约（F1：新版 DSH Session 无 log/events）", () => {
+  const session = {
+    snapshotEvents: () => [
+      { type: "user/message", data: { source: { kind: "plugin" }, content: [{ type: "text", text: "插件注入上下文" }] } },
+      { type: "user/message", data: { content: [{ type: "text", text: "快照契约下的真实问题" }] } },
+    ],
+  };
+  assert.equal(collectLastUserQuery(session), "快照契约下的真实问题");
+});
+
+test("index: collectLastUserQuery 旧契约 log 兼容（F1 防御性）", () => {
+  const session = {
+    log: [{ type: "user/message", data: { content: [{ type: "text", text: "旧契约问题" }] } }],
+  };
+  assert.equal(collectLastUserQuery(session), "旧契约问题");
 });
