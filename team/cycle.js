@@ -322,7 +322,8 @@ export function loadTimelineMaterial(dshHome, opts = {}) {
 
   // 3) journal 最近 N 天流水尾部
   if (journalDays > 0) {
-    const journalDir = join(dshHome, "linghun", "journal");
+    // A6 修复：journal 目录在 memory 区内（与 linghun 写侧一致），复用已拼对的 memoryDir
+    const journalDir = join(memoryDir, "journal");
     const files = listSortedDesc(journalDir).slice(0, journalDays);
     for (const f of files) {
       const tail = readSafe(join(journalDir, f)).slice(-journalTail);

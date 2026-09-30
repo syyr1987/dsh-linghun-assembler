@@ -13,10 +13,11 @@
  * LLM 失败时默认保留上次素材包（fallbackKeepLast），不阻断对话。
  */
 import { mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, basename } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
-import { parseWarm, renderWarmEntries } from "./warm.js";
+import { parseWarm, renderWarmEntries, loadWorkspaceDocs } from "./warm.js";
 import { BM25 } from "./bm25.js";
 import {
   judgeByHeuristics,
@@ -46,8 +47,8 @@ const name = "linghun-assembler";
 const inject = ["llm"];
 const NS = "linghun-assembler";
 
-/** 运行时探针（排障用）：追加 JSONL 到 /tmp，不影响任何业务路径。 */
-const PROBE_FILE = "/tmp/asm-probe.jsonl";
+/** 运行时探针（排障用）：追加 JSONL 到系统临时目录（跨平台，Windows 上不再落到盘根 /tmp）。 */
+const PROBE_FILE = join(tmpdir(), "asm-probe.jsonl");
 let PROBE_ENABLED = true;
 function probe(tag, extra) {
   if (!PROBE_ENABLED) return;
@@ -82,6 +83,9 @@ const Config = z.object({
     autoThreshold: z.number().default(24),
     /** 直通时素材文本上限（字符），超出截断防 LLM 输入爆炸。 */
     maxDirectChars: z.number().default(8000),
+    /** 自定义工作区/领域库目录列表：递归扫描其中 .md 作为 warm 之外的额外候选源。
+     *  留空=仅 $DSH_HOME/linghun/memory/*（原行为）；配置后领域库参与 BM25 检索与未命中判定。 */
+    workspaceDirs: z.array(z.string()).default([]),
   }).default({}),
   assemble: z.object({
     temperature: z.number().default(0.2),
@@ -292,7 +296,18 @@ function apply(ctx, config) {
       }
 
       // 捞取(Act)：light 直通 / medium BM25 / deep BM25(+时序+矛盾)
-      const forceRetrieval = level === "deep" && entries.length > 0;
+      // 自定义工作区/领域库接入：扫描 extraDirs 的 .md 作为 warm 之外额外候选源
+      const wsDocs = loadWorkspaceDocs(c.retrieval?.workspaceDirs ?? []);
+      // 候选全集：warm 条目 + 工作区文档（工作区文档直接当独立候选块参与检索/未命中判定）
+      const candidateDocs = [
+        ...entries.map((e) => ({ kind: "warm", entry: e, block: e.block })),
+        ...wsDocs.map((d) => ({
+          kind: "workspace",
+          entry: { block: `【工作区·${basename(d.file)}】\n${d.text}`, lastAccess: null, confidence: "medium" },
+          block: `【工作区·${basename(d.file)}】\n${d.text}`,
+        })),
+      ];
+      const forceRetrieval = level === "deep" && candidateDocs.length > 0;
       const useRetrieval = decideRetrieval(mode, entries.length, autoThreshold) || forceRetrieval;
       const k =
         strategy === "summarization"
@@ -304,14 +319,14 @@ function apply(ctx, config) {
               : (c.retrieval?.topK ?? 12);
       const recentSafe = strategy === "knowledge_update" ? 6 : 0;
       let hits;
-      if (useRetrieval && entries.length) {
-        const docs = entries.map((e) => e.block);
+      if (useRetrieval && candidateDocs.length) {
+        const docs = candidateDocs.map((d) => d.block);
         const bm25 = new BM25(docs);
         const idxs = bm25.top(searchQuery, k, recentSafe);
-        hits = idxs.map((i) => entries[i]);
+        hits = idxs.map((i) => candidateDocs[i].entry);
       } else {
-        // 直通：体量小或 light——全量交编辑，躲开 BM25 长文档惩罚
-        hits = entries;
+        // 直通：体量小或 light——全量交编辑（含工作区候选，标注来源），躲开 BM25 长文档惩罚
+        hits = candidateDocs.map((d) => d.entry);
       }
       let hitText = renderWarmEntries(hits);
       const cap = c.retrieval?.maxDirectChars ?? 8000;
@@ -391,7 +406,7 @@ function apply(ctx, config) {
       // 校准(Calibrate)：书记回写循环状态 + 缺口
       try {
         let cyc = recordTurn(readCycle(tDir), judge);
-        if (!hits.length && entries.length > 0) {
+        if (!hits.length && candidateDocs.length > 0) {
           cyc = recordGap(cyc, { query, hitText });
           appendGapFile(tDir, { query, at: new Date().toISOString() });
         }

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { judgeByHeuristics, extractJson, editorSystemPrompt } from "../team/roles.js";
 import { emptyCycle, teamDir, ensureDomainDirs, domainDir, findTimelineCache, writeTimelineCache, timelineTopics, readCycle, writeCycle, recordTurn, recordFeedback, recordGap, loadTimelineMaterial, matchFeedback, appendJudgeRecord, readJudgeHistory, appendEditorBundle, readEditorBundles } from "../team/cycle.js";
+import { loadWorkspaceDocs } from "../warm.js";
 
 // ---- 判官启发式 ----
 
@@ -131,7 +132,7 @@ test("cycle：损坏文件回落空状态", () => {
 test("loadTimelineMaterial：warm 按最近访问优先 + episodic/journal 读取", () => {
   const home = makeCycleDir();
   mkdirSync(join(home, "linghun", "memory", "episodic"), { recursive: true });
-  mkdirSync(join(home, "linghun", "journal"), { recursive: true });
+  mkdirSync(join(home, "linghun", "memory", "journal"), { recursive: true }); // A6：journal 在 memory 区内
   writeFileSync(
     join(home, "linghun", "memory", "warm.md"),
     [
@@ -141,7 +142,7 @@ test("loadTimelineMaterial：warm 按最近访问优先 + episodic/journal 读�
     "utf8",
   );
   writeFileSync(join(home, "linghun", "memory", "episodic", "2026-09-28.md"), "## 09:00\n\n归档内容\n", "utf8");
-  writeFileSync(join(home, "linghun", "journal", "2026-09-29.md"), "原始流水行\n", "utf8");
+  writeFileSync(join(home, "linghun", "memory", "journal", "2026-09-29.md"), "原始流水行\n", "utf8");
 
   const tl = loadTimelineMaterial(home, { topRecent: 2, journalDays: 1 });
   assert.ok(tl.includes("新条目（最近访问）"));
@@ -270,4 +271,40 @@ test("编辑发布：素材包交付留档（条目数/来源标记）", () => {
   assert.equal(recs[0].entryCount, 8);
   assert.equal(recs[0].timeline, true, "deep 组装应带时序标记");
   assert.equal(recs[1].chars, 800);
+});
+
+// ---- 自定义工作区/领域库接入 ----
+
+test("workspace：loadWorkspaceDocs 递归扫描 .md 并带来源标记", () => {
+  const root = mkdtempSync(join(tmpdir(), "asm-ws-"));
+  mkdirSync(join(root, "领域", "智能体架构领域"), { recursive: true });
+  mkdirSync(join(root, "领域", "沟通领域"), { recursive: true });
+  mkdirSync(join(root, "领域", "node_modules"), { recursive: true }); // 黑名单目录
+  writeFileSync(join(root, "领域", "智能体架构领域", "本体_规则.md"), "# 智能体架构\n\n## 规则\n\nR-115 边界张力\n", "utf8");
+  writeFileSync(join(root, "领域", "沟通领域", "备忘.md"), "# 沟通\n\n先立场再边界\n", "utf8");
+  writeFileSync(join(root, "领域", "node_modules", "坑.md"), "不应被读到\n", "utf8");
+  writeFileSync(join(root, "领域", "杂项.txt"), "非 md 不读\n", "utf8");
+
+  const docs = loadWorkspaceDocs([root]);
+  const texts = docs.map((d) => d.text).join("\n");
+  assert.equal(docs.length, 2, "只收 .md、跳过 node_modules、跳过非 md");
+  assert.ok(texts.includes("R-115 边界张力"));
+  assert.ok(texts.includes("先立场再边界"));
+  assert.ok(!texts.includes("不应被读到"));
+  assert.ok(!texts.includes("非 md 不读"));
+  assert.ok(docs.every((d) => d.file && typeof d.text === "string"));
+});
+
+test("workspace：目录不存在静默返回空（不阻断主流程）", () => {
+  const docs = loadWorkspaceDocs(["/nonexistent/领域库"]);
+  assert.equal(docs.length, 0);
+});
+
+test("workspace：超大文件截断上限生效", () => {
+  const root = mkdtempSync(join(tmpdir(), "asm-ws-big-"));
+  writeFileSync(join(root, "大文档.md"), "A".repeat(30000), "utf8");
+  const docs = loadWorkspaceDocs([root]);
+  assert.equal(docs.length, 1);
+  assert.ok(docs[0].text.length <= 8100, "超长文件应截断到上限内");
+  assert.ok(docs[0].text.endsWith("…[截断]"));
 });
