@@ -82,12 +82,18 @@ function setupHome() {
   mkdirSync(memDir, { recursive: true });
   writeFileSync(join(memDir, "warm.md"), WARM, "utf8");
   const oldHome = process.env.HOME;
+  const oldUserProfile = process.env.USERPROFILE;
   const oldDsh = process.env.DSH_HOME;
+  // A1 修复：dsh-home-paths 默认走 os.homedir()——Windows 上读 USERPROFILE，POSIX 上读 HOME。
+  // 两个都重定向，且不删 DSH_HOME、显式指向隔离 home（DSH_HOME 优先级最高，能盖住两个平台）。
   process.env.HOME = home;
-  delete process.env.DSH_HOME; // 让 dsh-home-paths 走 HOME
+  process.env.USERPROFILE = home;
+  process.env.DSH_HOME = join(home, ".dsh");
   return () => {
     if (oldHome === undefined) delete process.env.HOME;
     else process.env.HOME = oldHome;
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = oldUserProfile;
     if (oldDsh === undefined) delete process.env.DSH_HOME;
     else process.env.DSH_HOME = oldDsh;
   };
