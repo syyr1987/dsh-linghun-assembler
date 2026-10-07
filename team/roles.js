@@ -57,6 +57,20 @@ export function judgeByHeuristics(question, cycle = null) {
     return { level: "medium", strategy: "knowledge_update", query: q, reason: "状态更新类问题，时间保底检索" };
   }
 
+  // 事件顺序 / 偏好遵循 / 矛盾核实 / 时间计算：各走对应组装纪律
+  if (/顺序|先后|sequence|顺序|先.*后|哪个先|什么顺序/i.test(q)) {
+    return { level: "medium", strategy: "event_ordering", query: q, reason: "事件顺序类问题，按时间排序纪律" };
+  }
+  if (/偏好|倾向|喜欢|preference|更愿意|规则|纪律|风格|版本.*绑定/i.test(q)) {
+    return { level: "medium", strategy: "preference_following", query: q, reason: "偏好遵循类问题，保留偏好原话" };
+  }
+  if (/矛盾|冲突|对不上|不一致|核实|contradiction/i.test(q)) {
+    return { level: "deep", strategy: "contradiction_resolution", query: q, reason: "矛盾核实类问题，冲突并列纪律" };
+  }
+  if (/多少天|间隔|时长|相差|时间差|temporal|多久前/i.test(q)) {
+    return { level: "medium", strategy: "temporal_reasoning", query: q, reason: "时间计算类问题，保留日期由主智能体计算" };
+  }
+
   return { level: "light", strategy: "general", query: q, reason: "常规问题，轻量捞取" };
 }
 
@@ -67,7 +81,7 @@ export function judgeSystemPrompt() {
     "输入：用户问题 + 最近循环状态。\n" +
     "输出：严格 JSON，字段：\n" +
     '- "level": "light"|"medium"|"deep"——light=常规问题轻量捞取；medium=需要按策略检索；deep=需要时序回溯/矛盾扫描/历史对照；\n' +
-    '- "strategy": "summarization"|"knowledge_update"|"conflict"|"timeline"|"general"；\n' +
+    '- "strategy": "summarization"|"knowledge_update"|"conflict"|"timeline"|"general"|"event_ordering"|"preference_following"|"contradiction_resolution"|"temporal_reasoning"；\n' +
     '- "query": 可选的拆解检索查询（一般等于原问题，含多个子问题时可给出更利于检索的查询文本）；\n' +
     '- "reason": 一句话理由。\n' +
     "不要输出 JSON 以外的任何文本。"
@@ -142,7 +156,7 @@ export async function judgeWithLlm(llmClient, modelInfo, question, cycle, opts =
   });
   const j = extractJson(out);
   const level = ["light", "medium", "deep"].includes(j.level) ? j.level : "medium";
-  const strategy = ["summarization", "knowledge_update", "conflict", "timeline", "general"].includes(j.strategy)
+  const strategy = ["summarization", "knowledge_update", "conflict", "timeline", "general", "event_ordering", "preference_following", "contradiction_resolution", "temporal_reasoning"].includes(j.strategy)
     ? j.strategy
     : "general";
   return {
