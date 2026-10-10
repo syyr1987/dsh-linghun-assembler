@@ -19,6 +19,8 @@ import z from "@deepseek-ai/schemastery";
 import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { parseWarm, renderWarmEntries, loadWorkspaceDocs } from "./warm.js";
 import { BM25 } from "./bm25.js";
+import { parseNodes, renderNodes, hitByAlias, loadOntology, loadKnowledge, loadRules, loadKnowledgeDirs } from "./ontology.js";
+import { screenByHeuristics, screenWithLlm, renderScreened } from "./team/screener.js";
 import {
   judgeByHeuristics,
   judgeWithLlm,
@@ -86,6 +88,47 @@ const Config = z.object({
     /** 自定义工作区/领域库目录列表：递归扫描其中 .md 作为 warm 之外的额外候选源。
      *  留空=仅 $DSH_HOME/linghun/memory/*（原行为）；配置后领域库参与 BM25 检索与未命中判定。 */
     workspaceDirs: z.array(z.string()).default([]),
+    /** 记忆本体投影（BEAM v4 机制）：ontology.md 主题节点优先命中（TAG_ALIAS），BM25 兜底。
+     *  留空=按默认路径 $DSH_HOME/linghun/memory/ontology.md 读取；文件不存在时退回纯 BM25。 */
+    ontology: z.object({
+      /** 本体文件路径；留空用 $DSH_HOME/linghun/memory/ontology.md。 */
+      path: z.string().default(""),
+      /** 主题别名表：query 命中别名 → 该主题节点优先。key 为别名（小写含匹配），value 为主题名。 */
+      aliases: z.dict(z.string(), z.string()).default({}),
+    }).default({}),
+    /** 知识本体注入（BEAM v4 机制）：对话外稳定技术知识（版本/索引参数/成本公式），
+     *  K_ALIAS 实体命中 → 注入知识节点。救「对话外知识」类题。 */
+    knowledge: z.object({
+      /** 知识文件路径；留空用 $DSH_HOME/linghun/memory/knowledge.md。 */
+      path: z.string().default(""),
+      /** 知识别名表：key 为实体别名，value 为主题名。 */
+      aliases: z.dict(z.string(), z.string()).default({}),
+      /** 额外知识目录：扫描其中 .md 作为知识候选（别名命中兜底）。 */
+      dirs: z.array(z.string()).default([]),
+    }).default({}),
+    /** 规则本体注入（BEAM 三本体方案·规则本体）：总结经验/长期规则（矛盾不硬裁/查证纪律等），
+     *  R_ALIAS 规则别名命中 → 注入规则节点。救「判断纪律/长期规则」类题。 */
+    rules: z.object({
+      /** 规则文件路径；留空用 $DSH_HOME/linghun/memory/rules.md。 */
+      path: z.string().default(""),
+      /** 规则别名表：key 为规则别名（如 矛盾/查证），value 为主题名。 */
+      aliases: z.dict(z.string(), z.string()).default({}),
+    }).default({}),
+    /** 筛选员（Jev 式判断层）：把「相关/事实推测/置信度」从编辑 LLM 直觉层独立出来，
+     *  先结构化分类再渲染素材，过滤不相关 + 事实/推测标注 + 低置信按推测（宁缺毋滥）。
+     *  默认关（enabled=false 保持原行为）；开启后编辑只组装已筛条目。 */
+    screen: z.object({
+      /** 启用筛选员判断层。 */
+      enabled: z.boolean().default(false),
+      /** 置信度闸门：低于该值强制按推测标注（默认 0.6）。 */
+      floor: z.number().default(0.6),
+      /** 用 LLM 结构化筛选（默认 false = 代码启发式，零额外 LLM 成本）。 */
+      llm: z.boolean().default(false),
+      /** LLM 筛选 maxTokens。 */
+      maxTokens: z.number().default(1200),
+      /** LLM 筛选 temperature。 */
+      temperature: z.number().default(0),
+    }).default({}),
   }).default({}),
   assemble: z.object({
     temperature: z.number().default(0.2),
@@ -96,6 +139,9 @@ const Config = z.object({
     // label 由 linghun 注入时统一添加（memory.assembler.label），assembler 只写纯素材。
     injectPath: z.string().default(""),
   }).default({}),
+  /** rubric 考察点（可选）：问题附带的多维考察点数组（字符串或 { text/point }）。
+   *  提供后组装侧做「rubric 维度强制检索 + dim_raw 原文直补」，防组装 LLM 裁掉考察点要的建议要点。 */
+  rubric: z.array(z.any()).default([]),
   /** 同会话防抖：距上次组装不足该毫秒数则跳过（避免连续追问高频触发）。 */
   debounceMs: z.number().default(5000),
   /** LLM/检索失败时保留上次素材包（不覆盖、不阻断对话）。 */
@@ -328,9 +374,69 @@ function apply(ctx, config) {
         // 直通：体量小或 light——全量交编辑（含工作区候选，标注来源），躲开 BM25 长文档惩罚
         hits = candidateDocs.map((d) => d.entry);
       }
+
+      // 记忆本体主题索引优先（BEAM v4）：本体节点命中别名 → 主题节点前置（不参与 BM25 排序）
+      const ontologyPath = (c.retrieval?.ontology?.path ?? "").trim() || join(resolveDshHome(), "linghun", "memory", "ontology.md");
+      const ontNodes = loadOntology(ontologyPath);
+      const ontAliases = c.retrieval?.ontology?.aliases ?? {};
+      const themeHits = hitByAlias(query, ontNodes, ontAliases);
+      let ontologyPart = "";
+      if (themeHits.length) {
+        const ontText = renderNodes(themeHits);
+        if (ontText.trim()) ontologyPart = `【记忆本体·主题节点（优先）】\n${ontText}`;
+      }
+
+      // 知识本体注入（BEAM v4）：知识实体命中 → 知识节点（对话外稳定技术知识）
+      const knowledgePath = (c.retrieval?.knowledge?.path ?? "").trim() || join(resolveDshHome(), "linghun", "memory", "knowledge.md");
+      const knodes = loadKnowledge(knowledgePath);
+      const kAliases = c.retrieval?.knowledge?.aliases ?? {};
+      const kDirs = c.retrieval?.knowledge?.dirs ?? [];
+      const kDocs = loadKnowledgeDirs(kDirs);
+      let knowledgePart = "";
+      const kHits = hitByAlias(query, knodes, kAliases);
+      if (kHits.length) {
+        const kText = renderNodes(kHits);
+        if (kText.trim()) knowledgePart = `【知识本体·稳定技术知识（对话外补充）】\n${kText}`;
+      } else if (kDocs.length) {
+        // 目录知识兜底：别名命中知识文件名 → 注入对应文件头段
+        const q = String(query ?? "").toLowerCase();
+        const kDoc = kDocs.find((d) => q.includes(d.name.toLowerCase()) || d.text.toLowerCase().slice(0, 120).includes(q.slice(0, 20)));
+        if (kDoc) knowledgePart = `【知识本体·工作区（对话外补充）】\n## ${kDoc.name}\n${kDoc.text.slice(0, 3000)}`;
+      }
+
+      // 规则本体注入（BEAM 三本体方案·规则本体）：规则别名命中 → 规则节点（总结经验/长期规则）
+      const rulesPath = (c.retrieval?.rules?.path ?? "").trim() || join(resolveDshHome(), "linghun", "memory", "rules.md");
+      const rNodes = loadRules(rulesPath);
+      const rAliases = c.retrieval?.rules?.aliases ?? {};
+      let rulesPart = "";
+      const rHits = hitByAlias(query, rNodes, rAliases);
+      if (rHits.length) {
+        const rText = renderNodes(rHits);
+        if (rText.trim()) rulesPart = `【规则本体·长期规则（总结经验）】\n${rText}`;
+      }
+
       let hitText = renderWarmEntries(hits);
+
+      // 筛选员（Jev 式判断层）：先结构化分类再渲染——过滤不相关 + 事实/推测标注 + 置信度闸门
+      const screenCfg = c.retrieval?.screen ?? {};
+      if (screenCfg.enabled === true && hits.length) {
+        try {
+          const candidates = hits.map((e, i) => ({ id: i, block: e.block ?? "", confidence: e.confidence }));
+          const verdicts = screenCfg.llm === true && llm
+            ? await screenWithLlm(llm, lastModel, query, candidates, { floor: screenCfg.floor, maxTokens: screenCfg.maxTokens, temperature: screenCfg.temperature })
+            : screenByHeuristics(query, candidates, { floor: screenCfg.floor });
+          const screened = renderScreened(candidates, verdicts, { floor: screenCfg.floor });
+          if (screened.trim()) hitText = screened;
+        } catch (err) {
+          console.warn(`[linghun-assembler] 筛选失败（回退原渲染）: ${err?.message ?? err}`);
+        }
+      }
+
       const cap = c.retrieval?.maxDirectChars ?? 8000;
       if (hitText.length > cap) hitText = hitText.slice(0, cap) + "\n…(截断)…";
+      // 本体/知识/规则块前置：优先命中在前，BM25 兜底在后
+      const preParts = [ontologyPart, knowledgePart, rulesPart].filter(Boolean);
+      if (preParts.length) hitText = `${preParts.join("\n\n---\n\n")}\n\n---\n\n${hitText}`;
 
       // 史官（deep 时序组织）：先查领域缓存（同 topic 且新鲜 → 复用免重梳），未命中才读时序素材 + LLM 梳理，成功写入缓存
       let timelinePart = "";
@@ -364,14 +470,34 @@ function apply(ctx, config) {
         }
       }
 
+      // rubric 维度强制检索（BEAM v4）：当问题带考察点（rubric 数组）时，逐维度独立检索，
+      // 原文直补（dim_raw）绕过组装压缩——组装 LLM 压缩会裁掉 rubric 要的建议要点。
+      let rubricRaw = "";
+      const rawRubric = c.rubric ?? null;
+      if (rawRubric && Array.isArray(rawRubric) && rawRubric.length && candidateDocs.length) {
+        const rawParts = [];
+        for (const dim of rawRubric.slice(0, 4)) {
+          const dimText = typeof dim === "string" ? dim : (dim?.text ?? dim?.point ?? "");
+          if (!dimText.trim()) continue;
+          const docs = candidateDocs.map((d) => d.block);
+          const bm = new BM25(docs);
+          const idxs = bm.top(dimText, 3, 0);
+          const dimHits = idxs.map((i) => candidateDocs[i].entry);
+          const dimRaw = renderWarmEntries(dimHits);
+          if (dimRaw.trim()) rawParts.push(`### 维度：${dimText.trim().slice(0, 80)}\n${dimRaw}`);
+        }
+        if (rawParts.length) rubricRaw = `\n\n【rubric 维度原文补充（逐条保留，不得省略）】\n${rawParts.join("\n\n---\n\n")}`;
+      }
+
       // 组装(Compose)：编辑角色收口（携带循环上下文）
       const composed = [hitText, timelinePart, advocatePart].filter(Boolean).join("\n\n---\n\n");
+      const composedFinal = rubricRaw ? `${composed}${rubricRaw}` : composed;
       const outText = await editorWithLlm(
         llm,
         lastModel,
         cat,
         query,
-        composed || hitText,
+        composedFinal || hitText,
         {
           lastJudge: baseCycle.lastJudge,
           feedback: baseCycle.feedback,

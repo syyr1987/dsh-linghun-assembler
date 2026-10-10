@@ -23,7 +23,8 @@
 | 角色 | 职责 | 预算纪律 |
 |---|---|---|
 | **判官 Judge** | 问题分级（light/medium/deep）+ 策略选择 | 默认代码启发式（零 LLM）；`judge.llm=true` 才调 LLM |
-| **捞手 Retriever** | BM25 检索 + 题型分流 | light 直通 / medium BM25 / deep BM25+时序 |
+| **捞手 Retriever** | 保留问题相关事实 + 标注相关推测（语义捞取，不词面匹配） | light 直通 / medium BM25 / deep BM25+时序；事实与推测分离标注 |
+| **筛选员 Screener** | Jev 式判断层：先结构化分类（相关/事实推测/置信度）再渲染素材，过滤不相关 + 低置信按推测（宁缺毋滥） | 默认代码启发式（零 LLM）；`screen.llm=true` 才调 LLM；默认关 `screen.enabled=false` |
 | **史官 Archivist** | deep 时读时序素材（warm 遗忘梯度 + episodic 归档 + journal 流水）梳来龙去脉 | 仅 deep 调用 LLM；失败跳过不阻断 |
 | **辩手 Advocate** | deep 时查矛盾/不一致 | 默认关（`advocate.enabled=true` 开启） |
 | **编辑 Editor** | 压缩成有用素材包（带循环上下文） | 每轮必调（复用 assemble.js 双轨 prompt） |
@@ -129,6 +130,10 @@ retrieval:
   topK: 12
   strategy: true
   workspaceDirs: []   # 自定义工作区/领域库目录（v0.3.2）：递归扫描其中 .md 作为 warm 之外的额外候选源
+  screen:
+    enabled: false     # 筛选员（Jev 式判断层）默认关；true 则命中条目先分类再渲染
+    floor: 0.6         # 置信度闸门：低于此值的条目强制按推测标注（宁缺毋滥防漏）
+    llm: false         # 默认代码启发式（零 LLM，Jev 式判别）；true 才走 LLM 结构化判断（相关/类型/置信度三题型）
 assemble:
   temperature: 0.2
   maxTokens: 1200
